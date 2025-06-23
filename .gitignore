@@ -58,10 +58,6 @@ V2/
 !DB/
 !DB/hadith_chunks.parquet
 
-!faiss_index/
-!faiss_index/**/index.faiss
-!faiss_index/**/index.pkl
-
 # 🌐 Frontend
 !frontend/
 !frontend/index.html
