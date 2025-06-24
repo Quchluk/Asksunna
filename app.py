@@ -1,69 +1,257 @@
 import streamlit as st
 import os
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 import faiss
 import pickle
 import pandas as pd
 import numpy as np
 from pathlib import Path
+import time
 
-# Обновленные LangChain imports
+# Updated LangChain imports
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.schema import Document
 
-# Настройка логирования
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения
+# Load environment variables
 load_dotenv()
 
 
-# Конфигурация
+# Configuration
 class Config:
-    """Класс для хранения конфигурации приложения"""
-    # Для эмбеддингов используем OpenAI напрямую
+    """Application configuration class"""
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-    # Для LLM используем OpenRouter
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
     EMBEDDING_MODEL = "text-embedding-3-large"
-    LLM_MODEL = "deepseek/deepseek-chat"
+    DEFAULT_LLM_MODEL = "deepseek/deepseek-chat"
 
-    # Пути согласно ТЗ
-    FAISS_INDEX_DIR = "/Users/Tosha/Desktop/Projects/asksunna/asksunna/faiss_index"
-    HADITH_CHUNKS_PATH = "/Users/Tosha/Desktop/Projects/asksunna/asksunna/DB/hadith_chunks.parquet"
-    HADITH_EMBEDDINGS_PATH = "/Users/Tosha/Desktop/Projects/asksunna/asksunna/DB/hadith_embeddings.parquet"
+    # Available working models only
+    AVAILABLE_MODELS = {
+        "deepseek/deepseek-chat": "DeepSeek Chat (Main)",
+        "deepseek/deepseek-r1": "DeepSeek R1 (Reasoning)"
+    }
+
+    FAISS_INDEX_DIR = "faiss_index"
+    HADITH_CHUNKS_PATH = "DB/hadith_chunks.parquet"
+    HADITH_EMBEDDINGS_PATH = "DB/hadith_embeddings.parquet"
 
     MAX_RETRIEVAL_DOCS = 5
-    LLM_TEMPERATURE = 0.1
+    DEFAULT_TEMPERATURE = 0.1
 
     @classmethod
     def validate(cls):
-        """Валидация конфигурации"""
+        """Configuration validation"""
         if not cls.OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY не найден в .env файле")
+            raise ValueError("OPENAI_API_KEY not found in .env file")
         if not cls.OPENROUTER_API_KEY:
-            raise ValueError("OPENROUTER_API_KEY не найден в .env файле")
+            raise ValueError("OPENROUTER_API_KEY not found in .env file")
         if not os.path.exists(cls.FAISS_INDEX_DIR):
-            raise ValueError(f"Директория с индексами {cls.FAISS_INDEX_DIR} не найдена")
+            raise ValueError(f"Index directory {cls.FAISS_INDEX_DIR} not found")
         if not os.path.exists(cls.HADITH_CHUNKS_PATH):
-            raise ValueError(f"Файл с чанками хадисов {cls.HADITH_CHUNKS_PATH} не найден")
+            raise ValueError(f"Hadith chunks file {cls.HADITH_CHUNKS_PATH} not found")
 
 
-# Инициализация конфигурации
+# Initialize configuration
 try:
     Config.validate()
 except ValueError as e:
-    st.error(f"Ошибка конфигурации: {e}")
+    st.error(f"Configuration error: {e}")
     st.stop()
+
+
+# Simplified CSS - keeping only what works
+def inject_custom_css():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+    :root {
+        --bg-primary: #0a0a0f;
+        --bg-secondary: #12121a;
+        --surface-primary: rgba(18, 18, 26, 0.9);
+        --surface-secondary: rgba(30, 30, 45, 0.8);
+        --text-primary: #ffffff;
+        --text-secondary: rgba(255, 255, 255, 0.8);
+        --text-tertiary: rgba(255, 255, 255, 0.6);
+        --accent-primary: #6366f1;
+        --accent-secondary: #06b6d4;
+        --border-light: rgba(255, 255, 255, 0.1);
+        --shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .main {
+        background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+        min-height: 100vh;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .stDeployButton {display: none;}
+
+    .custom-header {
+        background: var(--surface-primary);
+        backdrop-filter: blur(20px);
+        border: 1px solid var(--border-light);
+        border-radius: 24px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        text-align: center;
+        box-shadow: var(--shadow-soft);
+    }
+
+    .app-title {
+        font-size: 3rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 1rem;
+        letter-spacing: -0.02em;
+    }
+
+    .app-subtitle {
+        font-size: 1.2rem;
+        color: var(--text-secondary);
+        font-weight: 400;
+        line-height: 1.6;
+    }
+
+    .search-section {
+        background: var(--surface-primary);
+        backdrop-filter: blur(20px);
+        border: 1px solid var(--border-light);
+        border-radius: 20px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: var(--shadow-soft);
+    }
+
+    .result-card {
+        background: var(--surface-primary);
+        backdrop-filter: blur(20px);
+        border: 1px solid var(--border-light);
+        border-radius: 20px;
+        padding: 2rem;
+        box-shadow: var(--shadow-soft);
+        margin-bottom: 2rem;
+    }
+
+    .arabic-text {
+        font-family: 'Amiri', 'Traditional Arabic', serif !important;
+        font-size: 1.4rem !important;
+        line-height: 2 !important;
+        text-align: right !important;
+        direction: rtl !important;
+        color: var(--text-primary) !important;
+        background: var(--surface-secondary) !important;
+        padding: 1.5rem !important;
+        border-radius: 12px !important;
+        border-right: 4px solid var(--accent-secondary) !important;
+        margin: 1.5rem 0 !important;
+    }
+
+    .source-item {
+        background: var(--surface-secondary);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+        border-left: 4px solid var(--accent-primary);
+    }
+
+    .metadata-grid {
+        background: var(--surface-secondary);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border-left: 3px solid var(--accent-secondary);
+    }
+
+    .metadata-item {
+        margin-bottom: 0.5rem;
+        padding: 0.25rem 0;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .metadata-label {
+        font-weight: 600;
+        color: var(--accent-secondary);
+        min-width: 140px;
+        flex-shrink: 0;
+    }
+
+    .metadata-value {
+        color: var(--text-secondary);
+        flex: 1;
+    }
+
+    .settings-section {
+        background: var(--surface-secondary);
+        border-radius: 16px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .stButton > button {
+        background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+        border: none;
+        border-radius: 12px;
+        color: white;
+        font-weight: 600;
+        padding: 0.8rem 2rem;
+        font-size: 1rem;
+        transition: all 0.3s ease;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-soft);
+    }
+
+    /* Fix expander styling */
+    .streamlit-expanderHeader {
+        background: var(--surface-secondary) !important;
+        border-radius: 8px !important;
+        border: 1px solid var(--border-light) !important;
+    }
+
+    .streamlit-expanderContent {
+        background: var(--surface-secondary) !important;
+        border-radius: 0 0 8px 8px !important;
+        border: 1px solid var(--border-light) !important;
+        border-top: none !important;
+    }
+
+    @media (max-width: 768px) {
+        .app-title {
+            font-size: 2rem;
+        }
+
+        .metadata-item {
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .metadata-label {
+            min-width: auto;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 
 class MetadataManager:
@@ -83,24 +271,13 @@ class MetadataManager:
             raise
 
     def get_chunk_metadata(self, uid_chunked: str) -> Dict[str, Any]:
-        """
-        Get complete metadata for chunk by uid_chunked
-
-        Args:
-            uid_chunked: unique chunk identifier
-
-        Returns:
-            Dictionary with complete metadata
-        """
+        """Get complete metadata for chunk by uid_chunked"""
         try:
             row = self.hadith_chunks_df[self.hadith_chunks_df['uid_chunked'] == uid_chunked]
-
             if row.empty:
                 logger.warning(f"Metadata for uid_chunked {uid_chunked} not found")
                 return {}
-
             return row.iloc[0].to_dict()
-
         except Exception as e:
             logger.error(f"Error getting metadata for {uid_chunked}: {e}")
             return {}
@@ -111,8 +288,7 @@ class HadithRetriever:
 
     def __init__(self):
         self.embeddings = None
-        self.vectorstore = None
-        self.retriever = None
+        self.vectorstores = {}
         self.metadata_manager = MetadataManager()
         self._init_embeddings()
 
@@ -127,506 +303,618 @@ class HadithRetriever:
         except Exception as e:
             logger.error(f"Error initializing embedding model: {e}")
             raise
-            logger.info("Эмбеддинг модель успешно инициализирована через OpenAI API")
-        except Exception as e:
-            logger.error(f"Ошибка инициализации эмбеддинг модели: {e}")
-            raise
 
     @st.cache_resource
     def load_faiss_index(_self, collection_name: str) -> Optional[FAISS]:
-        """
-        Загрузка FAISS индекса для указанного сборника с кэшированием
-
-        Args:
-            collection_name: Название сборника хадисов
-
-        Returns:
-            FAISS vectorstore или None при ошибке
-        """
+        """Load FAISS index for specified collection with caching"""
         try:
             index_path = os.path.join(Config.FAISS_INDEX_DIR, collection_name)
-
             if not os.path.exists(index_path):
-                logger.error(f"Индекс для сборника '{collection_name}' не найден: {index_path}")
+                logger.error(f"Index for collection '{collection_name}' not found: {index_path}")
                 return None
 
-            # Загрузка FAISS индекса
             vectorstore = FAISS.load_local(
                 index_path,
                 _self.embeddings,
                 allow_dangerous_deserialization=True
             )
-
-            logger.info(f"Индекс для сборника '{collection_name}' успешно загружен")
+            logger.info(f"Index for collection '{collection_name}' successfully loaded")
             return vectorstore
-
         except Exception as e:
-            logger.error(f"Ошибка загрузки индекса для сборника '{collection_name}': {e}")
+            logger.error(f"Error loading index for collection '{collection_name}': {e}")
             return None
 
-    def setup_retriever(self, collection_name: str) -> bool:
-        """
-        Настройка ретривера для указанного сборника
+    def search_multiple_sources(self, query: str, collection_names: List[str], max_docs_per_source: int = 3) -> Dict[
+        str, List[Document]]:
+        """Search across multiple collections"""
+        results = {}
 
-        Args:
-            collection_name: Название сборника хадисов
+        for collection_name in collection_names:
+            vectorstore = self.load_faiss_index(collection_name)
+            if vectorstore:
+                try:
+                    retriever = vectorstore.as_retriever(search_kwargs={"k": max_docs_per_source})
+                    docs = retriever.get_relevant_documents(query)
 
-        Returns:
-            True если успешно, False при ошибке
-        """
-        try:
-            self.vectorstore = self.load_faiss_index(collection_name)
+                    # Enrich with metadata
+                    enriched_docs = []
+                    for doc in docs:
+                        uid_chunked = doc.metadata.get('uid_chunked')
+                        if uid_chunked:
+                            full_metadata = self.metadata_manager.get_chunk_metadata(uid_chunked)
+                            if full_metadata:
+                                enriched_doc = Document(
+                                    page_content=doc.page_content,
+                                    metadata=full_metadata
+                                )
+                                enriched_docs.append(enriched_doc)
+                            else:
+                                enriched_docs.append(doc)
+                        else:
+                            enriched_docs.append(doc)
 
-            if self.vectorstore is None:
-                return False
+                    results[collection_name] = enriched_docs
+                    logger.info(f"Found {len(enriched_docs)} documents in {collection_name}")
+                except Exception as e:
+                    logger.error(f"Error searching in {collection_name}: {e}")
+                    results[collection_name] = []
 
-            # Создание ретривера
-            self.retriever = self.vectorstore.as_retriever(
-                search_kwargs={"k": Config.MAX_RETRIEVAL_DOCS}
-            )
-
-            logger.info(f"Ретривер для сборника '{collection_name}' готов к работе")
-            return True
-
-        except Exception as e:
-            logger.error(f"Ошибка настройки ретривера: {e}")
-            return False
-
-    def search_similar_chunks(self, query: str) -> List[Document]:
-        """
-        Поиск похожих чанков для запроса с обогащением метаданными
-
-        Args:
-            query: Пользовательский запрос
-
-        Returns:
-            Список релевантных документов с полными метаданными
-        """
-        if not self.retriever:
-            logger.error("Ретривер не инициализирован")
-            return []
-
-        try:
-            docs = self.retriever.get_relevant_documents(query)
-
-            # Обогащение документов полными метаданными
-            enriched_docs = []
-            for doc in docs:
-                uid_chunked = doc.metadata.get('uid_chunked')
-                if uid_chunked:
-                    full_metadata = self.metadata_manager.get_chunk_metadata(uid_chunked)
-                    if full_metadata:
-                        # Создаем новый документ с полными метаданными
-                        enriched_doc = Document(
-                            page_content=doc.page_content,
-                            metadata=full_metadata
-                        )
-                        enriched_docs.append(enriched_doc)
-                    else:
-                        enriched_docs.append(doc)
-                else:
-                    enriched_docs.append(doc)
-
-            logger.info(f"Найдено {len(enriched_docs)} релевантных документов с полными метаданными")
-            return enriched_docs
-
-        except Exception as e:
-            logger.error(f"Ошибка поиска документов: {e}")
-            return []
+        return results
 
 
 class HadithQAChain:
-    """Класс для работы с LLM и генерации ответов"""
+    """Class for working with LLM and generating answers"""
 
-    def __init__(self):
+    def __init__(self, model_name: str = None, temperature: float = None):
+        self.model_name = model_name or Config.DEFAULT_LLM_MODEL
+        self.temperature = temperature or Config.DEFAULT_TEMPERATURE
         self.llm = None
-        self.qa_chain = None
         self._init_llm()
 
     def _init_llm(self):
-        """Инициализация LLM модели через OpenRouter"""
+        """Initialize LLM model through OpenRouter"""
         try:
             self.llm = ChatOpenAI(
-                model=Config.LLM_MODEL,
+                model=self.model_name,
                 openai_api_key=Config.OPENROUTER_API_KEY,
                 openai_api_base=Config.OPENROUTER_BASE_URL,
-                temperature=Config.LLM_TEMPERATURE,
-                max_tokens=1500
+                temperature=self.temperature,
+                max_tokens=2000
             )
-            logger.info("LLM модель успешно инициализирована через OpenRouter")
+            logger.info(f"LLM model {self.model_name} successfully initialized")
         except Exception as e:
-            logger.error(f"Ошибка инициализации LLM: {e}")
+            logger.error(f"Error initializing LLM: {e}")
             raise
 
-    def setup_qa_chain(self, retriever):
-        """
-        Настройка QA цепочки с кастомным промптом
-
-        Args:
-            retriever: Ретривер для поиска документов
-        """
+    def generate_answer(self, question: str, documents: List[Document], collection_name: str) -> str:
+        """Generate answer for specific collection"""
         try:
-            # Custom prompt for working with hadiths
-            prompt_template = """
-You are an expert on Islamic hadiths. Use the provided hadith fragments to give an accurate and well-founded answer to the user's question.
+            context = "\n\n".join([f"Source {i + 1}: {doc.page_content}" for i, doc in enumerate(documents)])
 
-Context (hadith fragments):
+            prompt = f"""You are an expert Islamic scholar specializing in hadith analysis. Based on the provided hadith sources from {collection_name}, provide a comprehensive and scholarly answer to the user's question.
+
+Context from {collection_name}:
 {context}
 
 Question: {question}
 
 Instructions:
-1. Answer accurately and exclusively based on the provided hadiths
-2. If there is insufficient information for a complete answer, honestly state this
-3. When possible, indicate collection names and hadith numbers
-4. Be respectful, accurate, and academic in your approach
-5. Answer in the language the question was asked in
-6. Structure your answer logically and clearly
-7. When quoting, indicate the source in parentheses
+1. Provide an accurate, scholarly response based solely on the provided hadiths
+2. Maintain academic rigor and respectful tone
+3. Reference specific hadiths when making points
+4. If information is insufficient, state this clearly
+5. Structure your response logically with clear reasoning
+6. Use formal academic language appropriate for Islamic scholarship
 
 Answer:"""
 
-            PROMPT = PromptTemplate(
-                template=prompt_template,
-                input_variables=["context", "question"]
-            )
-
-            # Создание QA цепочки
-            self.qa_chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff",
-                retriever=retriever,
-                chain_type_kwargs={"prompt": PROMPT},
-                return_source_documents=True
-            )
-
-            logger.info("QA цепочка успешно настроена")
+            response = self.llm.invoke(prompt)
+            return response.content if hasattr(response, 'content') else str(response)
 
         except Exception as e:
-            logger.error(f"Ошибка настройки QA цепочки: {e}")
-            raise
+            logger.error(f"Error generating answer for {collection_name}: {e}")
+            return f"Error generating answer: {e}"
 
-    def get_answer(self, question: str) -> Dict[str, Any]:
-        """
-        Получение ответа на вопрос
-
-        Args:
-            question: Вопрос пользователя
-
-        Returns:
-            Словарь с ответом и источниками
-        """
-        if not self.qa_chain:
-            logger.error("QA цепочка не инициализирована")
-            return {"answer": "Ошибка: QA цепочка не готова", "sources": []}
-
+    def generate_comparative_analysis(self, question: str, collection_results: Dict[str, str]) -> str:
+        """Generate comparative analysis across collections"""
         try:
-            result = self.qa_chain.invoke({"query": question})
+            collections_summary = ""
+            for collection, answer in collection_results.items():
+                collections_summary += f"\n\n**{collection.replace('_', ' ').title()}:**\n{answer}\n"
 
-            return {
-                "answer": result["result"],
-                "sources": result["source_documents"]
-            }
+            prompt = f"""You are a senior Islamic scholar conducting a comparative analysis of hadith interpretations across different canonical collections. 
+
+Question analyzed: {question}
+
+Results from different collections:
+{collections_summary}
+
+Task: Provide a comprehensive comparative analysis that:
+1. Identifies common themes and unanimous positions across collections
+2. Notes any differences or unique perspectives from specific collections
+3. Explains the significance of any variations in a scholarly context
+4. Synthesizes the findings into coherent conclusions
+5. Addresses the reliability and consistency of the teachings
+6. Provides academic insights into the methodological differences between collections
+
+Structure your analysis with clear sections and maintain the highest level of academic rigor expected in Islamic scholarship.
+
+Comparative Analysis:"""
+
+            response = self.llm.invoke(prompt)
+            return response.content if hasattr(response, 'content') else str(response)
 
         except Exception as e:
-            logger.error(f"Ошибка генерации ответа: {e}")
-            return {"answer": f"Ошибка при генерации ответа: {e}", "sources": []}
+            logger.error(f"Error generating comparative analysis: {e}")
+            return f"Error generating comparative analysis: {e}"
 
 
 def get_available_collections() -> List[str]:
-    """
-    Получение списка доступных сборников хадисов
-
-    Returns:
-        Список названий сборников
-    """
+    """Get list of available hadith collections"""
     try:
         index_dir = Path(Config.FAISS_INDEX_DIR)
         if not index_dir.exists():
             return []
-
         collections = [d.name for d in index_dir.iterdir() if d.is_dir()]
         return sorted(collections)
-
     except Exception as e:
-        logger.error(f"Ошибка получения списка сборников: {e}")
+        logger.error(f"Error getting collections list: {e}")
         return []
 
 
-def format_source_document(doc: Document, index: int) -> str:
-    """
-    Format source document for display with complete metadata in English
+def get_collection_display_info() -> Dict[str, Dict[str, str]]:
+    """Get display information for collections"""
+    return {
+        'sahih_bukhari': {'title': 'Sahih al-Bukhari', 'author': 'Imam Muhammad ibn Ismail al-Bukhari'},
+        'bukhari': {'title': 'Sahih al-Bukhari', 'author': 'Imam Muhammad ibn Ismail al-Bukhari'},
+        'sahih_muslim': {'title': 'Sahih Muslim', 'author': 'Imam Muslim ibn al-Hajjaj'},
+        'muslim': {'title': 'Sahih Muslim', 'author': 'Imam Muslim ibn al-Hajjaj'},
+        'sunan_abudawud': {'title': 'Sunan Abu Dawud', 'author': 'Imam Abu Dawud as-Sijistani'},
+        'abudawud': {'title': 'Sunan Abu Dawud', 'author': 'Imam Abu Dawud as-Sijistani'},
+        'jami_tirmidhi': {'title': 'Jami at-Tirmidhi', 'author': 'Imam Muhammad at-Tirmidhi'},
+        'tirmidhi': {'title': 'Jami at-Tirmidhi', 'author': 'Imam Muhammad at-Tirmidhi'},
+        'sunan_nasai': {'title': 'Sunan an-Nasai', 'author': 'Imam Ahmad an-Nasai'},
+        'nasai': {'title': 'Sunan an-Nasai', 'author': 'Imam Ahmad an-Nasai'},
+        'sunan_ibnmajah': {'title': 'Sunan Ibn Majah', 'author': 'Imam Ibn Majah al-Qazwini'},
+        'ibnmajah': {'title': 'Sunan Ibn Majah', 'author': 'Imam Ibn Majah al-Qazwini'},
+        'ahmed': {'title': 'Musnad Ahmad', 'author': 'Imam Ahmad ibn Hanbal'},
+        'aladab_almufrad': {'title': 'Al-Adab Al-Mufrad', 'author': 'Imam al-Bukhari'},
+        'bulugh_almaram': {'title': 'Bulugh al-Maram', 'author': 'Ibn Hajar al-Asqalani'},
+        'darimi': {'title': 'Sunan ad-Darimi', 'author': 'Imam Abdullah ibn Abd al-Rahman ad-Darimi'},
+        'malik': {'title': 'Muwatta Malik', 'author': 'Imam Malik ibn Anas'},
+        'mishkat_almasabih': {'title': 'Mishkat al-Masabih', 'author': 'Al-Khatib al-Tabrizi'},
+        'nawawi40': {'title': 'Forty Hadith an-Nawawi', 'author': 'Imam an-Nawawi'},
+        'qudsi40': {'title': 'Forty Hadith Qudsi', 'author': 'Various Scholars'},
+        'riyad_assalihin': {'title': 'Riyad as-Salihin', 'author': 'Imam an-Nawawi'},
+        'shahwaliullah40': {'title': 'Forty Hadith Shah Waliullah', 'author': 'Shah Waliullah'},
+        'shamail_muhammadiyah': {'title': 'Ash-Shama\'il al-Muhammadiyah', 'author': 'Imam at-Tirmidhi'},
+    }
 
-    Args:
-        doc: Document from search
-        index: Document number
 
-    Returns:
-        Formatted string
-    """
+def display_collection_selector(available_collections: List[str]) -> List[str]:
+    """Display collection selector using native Streamlit components"""
+    collection_info = get_collection_display_info()
+
+    st.markdown("### 📚 Select Hadith Collections")
+    st.markdown("Choose one or more authentic hadith collections for comprehensive analysis")
+
+    # Initialize session state
+    if 'selected_collections' not in st.session_state:
+        st.session_state.selected_collections = []
+
+    # Use multiselect for better UX
+    options = []
+    labels = []
+    for collection in available_collections:
+        info = collection_info.get(collection, {'title': collection.replace('_', ' ').title()})
+        options.append(collection)
+        labels.append(f"{info['title']} ({collection})")
+
+    # Create mapping
+    collection_mapping = dict(zip(labels, options))
+
+    selected_labels = st.multiselect(
+        "Select collections:",
+        labels,
+        default=[labels[i] for i, collection in enumerate(options) if
+                 collection in st.session_state.selected_collections],
+        help="Select multiple collections for comparative analysis"
+    )
+
+    # Update session state
+    st.session_state.selected_collections = [collection_mapping[label] for label in selected_labels]
+
+    # Show simple count without chips
+    if st.session_state.selected_collections:
+        st.success(f"Selected {len(st.session_state.selected_collections)} collection(s)")
+
+    return st.session_state.selected_collections
+
+
+def display_search_progress(step: int, total: int, current_action: str):
+    """Display search progress using native Streamlit components"""
+    progress = step / total
+
+    st.markdown("### 🔍 Search Progress")
+    st.progress(progress)
+
+    steps = [
+        "🔄 Initializing semantic search",
+        "📚 Loading collection indices",
+        "🔍 Searching for relevant hadiths",
+        "🤖 Generating scholarly analysis",
+        "📊 Creating comparative study",
+        "✅ Finalizing results"
+    ]
+
+    for i, step_text in enumerate(steps):
+        if i < step:
+            st.markdown(f"✅ {step_text}")
+        elif i == step:
+            st.markdown(f"⏳ {step_text}")
+        else:
+            st.markdown(f"⏸️ {step_text}")
+
+    if current_action:
+        st.info(f"Current: {current_action}")
+
+
+def format_metadata_display(metadata: Dict[str, Any]) -> None:
+    """Format and display metadata in a structured way"""
+
+    # Technical fields to exclude from display - expanded list
+    technical_fields = {
+        'uid_chunked', 'chunk_id', 'Unnamed: 0', 'Unnamed: 0.1',
+        'embedding', 'vector', 'index', 'id',
+        # Additional technical fields to exclude
+        'book_id', 'chapter_id', 'collection_set', 'chapter_file_name',
+        'source_path', 'uid', 'chunk_index', 'chunk_total', 'text_ar_chunk'
+    }
+
+    # Group metadata by categories
+    primary_info = {}
+    content_info = {}
+    reference_info = {}
+
+    for key, value in metadata.items():
+        # Convert key to lowercase for comparison
+        key_lower = key.lower()
+
+        # Skip technical fields
+        if key in technical_fields or key_lower in technical_fields:
+            continue
+
+        # Skip empty or null values
+        if pd.isna(value) or value is None or value == "" or value == "None":
+            continue
+
+        # Clean up the value
+        value_str = str(value).strip()
+        if not value_str or value_str.lower() in ['nan', 'none', 'null']:
+            continue
+
+        # Categorize fields
+        if key in ['collection_book', 'author_en', 'author_ar']:
+            primary_info[key] = value_str
+        elif key in ['text_en', 'text_ar']:
+            content_info[key] = value_str
+        elif key in ['hadith_id', 'hadith_id_in_book', 'book_title_en', 'book_title_ar',
+                     'chapter_title_en', 'chapter_title_ar', 'volume']:
+            reference_info[key] = value_str
+
+    # Display metadata in organized sections
+    if primary_info:
+        st.markdown("**📚 Collection Information:**")
+        st.markdown('<div class="metadata-grid">', unsafe_allow_html=True)
+        for key, value in primary_info.items():
+            display_name = {
+                'collection_book': 'Collection',
+                'author_en': 'Author (English)',
+                'author_ar': 'Author (Arabic)'
+            }.get(key, key.replace('_', ' ').title())
+
+            st.markdown(f'''
+            <div class="metadata-item">
+                <span class="metadata-label">{display_name}:</span>
+                <span class="metadata-value">{value}</span>
+            </div>
+            ''', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Reference Information
+    if reference_info:
+        st.markdown("**🔗 Reference Information:**")
+        st.markdown('<div class="metadata-grid">', unsafe_allow_html=True)
+        for key, value in reference_info.items():
+            display_name = {
+                'hadith_id': 'Hadith ID',
+                'hadith_id_in_book': 'Hadith Number in Book',
+                'book_title_en': 'Book Title (English)',
+                'book_title_ar': 'Book Title (Arabic)',
+                'chapter_title_en': 'Chapter Title (English)',
+                'chapter_title_ar': 'Chapter Title (Arabic)',
+                'volume': 'Volume'
+            }.get(key, key.replace('_', ' ').title())
+
+            st.markdown(f'''
+            <div class="metadata-item">
+                <span class="metadata-label">{display_name}:</span>
+                <span class="metadata-value">{value}</span>
+            </div>
+            ''', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+def format_source_document(doc: Document, index: int, collection_name: str) -> None:
+    """Format and display source document using Streamlit components"""
     metadata = doc.metadata
-    content = doc.page_content  # Show full content, not truncated
+    content = doc.page_content
 
-    # Safe value retrieval with None and NaN handling
     def safe_get(key, default="Not specified"):
         value = metadata.get(key, default)
         if pd.isna(value) or value is None or value == "":
             return default
         return str(value)
 
-    # Determine if content is Arabic or English
-    arabic_text = ""
-    english_text = ""
+    # Get texts properly - prefer metadata over content
+    english_text = safe_get('text_en', content)
+    arabic_text = safe_get('text_ar', 'Arabic text not available')
 
-    # Check if the main content is Arabic (contains Arabic characters)
-    if any('\u0600' <= char <= '\u06FF' for char in content[:100]):
-        arabic_text = content
-        english_text = safe_get('text_en', 'English translation not available')
-    else:
-        english_text = content
-        arabic_text = safe_get('text_ar', safe_get('text_ar_chunk', 'Arabic text not available'))
+    # Create container for source
+    st.markdown(f"""
+    <div class="source-item">
+        <h4>📖 {safe_get('collection_book')} - Hadith #{safe_get('hadith_id_in_book')}</h4>
+    </div>
+    """, unsafe_allow_html=True)
 
-    return f"""
-**📖 Source {index + 1}**
+    # English text
+    st.markdown("**English Translation:**")
+    st.markdown(english_text)
 
-**🔍 Basic Information:**
-- **Collection:** {safe_get('collection_book')}
-- **Author:** {safe_get('author_en')} ({safe_get('author_ar')})
-- **Book:** {safe_get('book_title_en')} ({safe_get('book_title_ar')})
-- **Chapter:** {safe_get('chapter_title_en')} ({safe_get('chapter_title_ar')})
+    # Arabic text (only if available and not just "Arabic text not available")
+    if arabic_text != 'Arabic text not available' and arabic_text.strip():
+        st.markdown("**Arabic Text:**")
+        st.markdown(f"""
+        <div class="arabic-text">
+            {arabic_text}
+        </div>
+        """, unsafe_allow_html=True)
 
-**📋 Identifiers:**
-- **Hadith ID:** {safe_get('hadith_id')}
-- **Number in Book:** {safe_get('hadith_id_in_book')}
-- **Chunk ID:** {safe_get('uid_chunked')}
-- **Chunk Number:** {safe_get('chunk_index')} of {safe_get('chunk_total')}
+    # Display metadata in an expandable section
+    with st.expander("📋 View Hadith Details", expanded=False):
+        format_metadata_display(metadata)
 
-**👤 Narrator:** {safe_get('narrator_en')}
-
-**📄 English Text:**
-{english_text}
-
-**🌐 Arabic Text:**
-{arabic_text}
-
----
-"""
-
-
-def display_search_statistics(sources: List[Document]):
-    """
-    Display statistics for found sources
-
-    Args:
-        sources: List of found documents
-    """
-    if not sources:
-        return
-
-    # Collect statistics
-    collections = {}
-    authors = {}
-    books = {}
-
-    for doc in sources:
-        metadata = doc.metadata
-
-        collection = metadata.get('collection_book', 'Unknown')
-        author = metadata.get('author_en', 'Unknown')
-        book = metadata.get('book_title_en', 'Unknown')
-
-        collections[collection] = collections.get(collection, 0) + 1
-        authors[author] = authors.get(author, 0) + 1
-        books[book] = books.get(book, 0) + 1
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.subheader("📚 By Collections")
-        for collection, count in collections.items():
-            st.text(f"• {collection}: {count}")
-
-    with col2:
-        st.subheader("✍️ By Authors")
-        for author, count in authors.items():
-            st.text(f"• {author}: {count}")
-
-    with col3:
-        st.subheader("📖 By Books")
-        for book, count in list(books.items())[:5]:  # Show top 5
-            book_short = book[:30] + "..." if len(book) > 30 else book
-            st.text(f"• {book_short}: {count}")
+    st.markdown("---")
 
 
 def main():
-    """Основная функция Streamlit приложения"""
+    """Main Streamlit application function"""
 
-    # Настройка страницы
+    # Page configuration
     st.set_page_config(
-        page_title="Hadith QA Retriever",
-        page_icon="📚",
-        layout="wide"
+        page_title="AskSunna - Islamic Knowledge Search",
+        page_icon="📖",
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
 
-    st.title("📚 Hadith QA Retriever")
-    st.markdown("*Search for answers in the hadith corpus using AI with complete metadata*")
+    # Inject custom CSS
+    inject_custom_css()
 
-    # Инициализация компонентов в сессии
-    if 'hadith_retriever' not in st.session_state:
-        try:
-            with st.spinner("🔄 Initializing system..."):
-                st.session_state.hadith_retriever = HadithRetriever()
-                st.session_state.qa_chain = HadithQAChain()
-                st.success("✅ System successfully initialized!")
-        except Exception as e:
-            st.error(f"❌ Initialization error: {e}")
-            st.stop()
+    # Custom header
+    st.markdown('''
+    <div class="custom-header">
+        <h1 class="app-title">AskSunna</h1>
+        <p class="app-subtitle">Advanced Islamic Knowledge Search Engine<br>
+        Explore authentic hadith collections with AI-powered semantic search and scholarly analysis</p>
+    </div>
+    ''', unsafe_allow_html=True)
 
-    # Sidebar for settings
+    # Sidebar for model settings
     with st.sidebar:
-        st.header("⚙️ Settings")
+        st.markdown('<div class="settings-section">', unsafe_allow_html=True)
+        st.markdown("### ⚙️ Model Configuration")
 
-        # Collection selection
-        collections = get_available_collections()
-        if not collections:
-            st.error("❌ No hadith collections found!")
-            st.stop()
-
-        selected_collection = st.selectbox(
-            "Select hadith collection:",
-            collections,
-            help="Choose a collection to search in"
+        selected_model = st.selectbox(
+            "AI Model",
+            options=list(Config.AVAILABLE_MODELS.keys()),
+            format_func=lambda x: Config.AVAILABLE_MODELS[x],
+            index=0,
+            help="Choose the AI model for analysis"
         )
 
-        # Search settings
-        st.subheader("🔍 Search Parameters")
-        max_docs = st.slider("Maximum documents", 1, 10, Config.MAX_RETRIEVAL_DOCS)
-        Config.MAX_RETRIEVAL_DOCS = max_docs
+        temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=1.0,
+            value=Config.DEFAULT_TEMPERATURE,
+            step=0.1,
+            help="Controls creativity vs consistency (0.0 = more consistent, 1.0 = more creative)"
+        )
 
-        st.markdown("---")
-        st.subheader("📊 System Information")
-        st.info(f"**Total collections:** {len(collections)}")
-        st.info(f"**Embeddings:** {Config.EMBEDDING_MODEL}")
-        st.info(f"**LLM:** {Config.LLM_MODEL}")
+        max_docs = st.slider(
+            "Max documents per collection",
+            min_value=1,
+            max_value=10,
+            value=Config.MAX_RETRIEVAL_DOCS,
+            help="Number of most relevant documents to retrieve from each collection"
+        )
 
-        st.markdown("---")
-        st.subheader("📚 Available Collections")
-        for i, collection in enumerate(collections, 1):
-            icon = "🎯" if collection == selected_collection else "📘"
-            st.markdown(f"{icon} {collection}")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # Main interface
-    col1, col2 = st.columns([3, 1])
+        st.markdown('<div class="settings-section">', unsafe_allow_html=True)
+        st.markdown("### 🔍 Search Settings")
+
+        include_comparison = st.checkbox(
+            "Generate Comparative Analysis",
+            value=True,
+            help="Create comparative analysis when multiple collections are selected"
+        )
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Initialize system components
+    if 'hadith_retriever' not in st.session_state:
+        with st.spinner("🔄 Initializing AI systems..."):
+            try:
+                st.session_state.hadith_retriever = HadithRetriever()
+                st.success("✅ System initialized successfully")
+            except Exception as e:
+                st.error(f"❌ Initialization error: {e}")
+                st.stop()
+
+    # Initialize QA chain with current settings
+    if 'current_model' not in st.session_state or st.session_state.current_model != selected_model:
+        st.session_state.qa_chain = HadithQAChain(selected_model, temperature)
+        st.session_state.current_model = selected_model
+
+    # Get available collections
+    available_collections = get_available_collections()
+    if not available_collections:
+        st.error("❌ No hadith collections found!")
+        st.stop()
+
+    # Collection selection
+    selected_collections = display_collection_selector(available_collections)
+
+    # Search interface
+    st.markdown('<div class="search-section">', unsafe_allow_html=True)
+    st.markdown("### 🔍 Search Query")
+
+    col1, col2 = st.columns([4, 1])
 
     with col1:
-        st.header("🔍 Ask Questions About Hadiths")
-
-        # Example questions
-        example_questions = [
-            "What do hadiths say about prayer?",
-            "Which hadiths mention righteousness?",
-            "What is said about fasting in hadiths?",
-            "Hadiths about relationships with parents",
-            "What is said about knowledge and learning?"
-        ]
-
-        selected_example = st.selectbox(
-            "Or choose an example:",
-            [""] + example_questions,
-            help="Select a ready-made question or enter your own"
+        question = st.text_input(
+            "Enter your question about Islamic teachings:",
+            placeholder="What do the hadiths say about prayer and its importance in daily life?",
+            label_visibility="collapsed"
         )
-
-        # Question input field
-        question = st.text_area(
-            "Enter your question:",
-            value=selected_example if selected_example else "",
-            height=100,
-            placeholder="For example: What do hadiths say about prayer?"
-        )
-
-        # Search button
-        search_button = st.button("🔎 Find Answer", type="primary", use_container_width=True)
 
     with col2:
-        st.header("📊 Status")
-        st.success(f"**Selected:** {selected_collection}")
-        st.info(f"**Max results:** {max_docs}")
+        search_button = st.button("🔎 Search Hadiths", type="primary", use_container_width=True)
 
-        if st.button("🔄 Reload Indexes", use_container_width=True):
-            st.cache_resource.clear()
-            st.success("Cache cleared!")
+    # Add cancel button if search is in progress
+    if st.session_state.get('search_in_progress', False):
+        if st.button("❌ Cancel Search", type="secondary", use_container_width=True):
+            st.session_state.search_in_progress = False
+            st.rerun()
 
-    # Process query
-    if search_button and question.strip():
-        with st.spinner("🔄 Searching for answer in hadith corpus..."):
-            try:
-                # Setup retriever for selected collection
-                if not st.session_state.hadith_retriever.setup_retriever(selected_collection):
-                    st.error(f"❌ Error loading index for collection '{selected_collection}'")
-                    st.stop()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-                # Setup QA chain
-                st.session_state.qa_chain.setup_qa_chain(st.session_state.hadith_retriever.retriever)
+    # Process search
+    if search_button and question.strip() and selected_collections:
+        st.session_state.search_in_progress = True
 
-                # Get answer
-                result = st.session_state.qa_chain.get_answer(question)
+        # Create progress placeholder
+        progress_placeholder = st.empty()
 
-                # Display results
-                st.markdown("---")
-                st.header("💬 Answer")
+        try:
+            # Step 1: Initialize
+            with progress_placeholder.container():
+                display_search_progress(0, 6, "Preparing search systems")
+            time.sleep(0.5)
 
-                # Answer in a styled container with better visibility
-                with st.container():
-                    st.markdown(
-                        f"""
-                        <div style='background-color: #ffffff; padding: 20px; border-radius: 10px; border-left: 5px solid #1f77b4; color: #000000; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-                        <div style='color: #000000; line-height: 1.6;'>
-                        {result["answer"]}
-                        </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
+            # Step 2: Load indices
+            with progress_placeholder.container():
+                display_search_progress(1, 6, f"Loading {len(selected_collections)} collection indices")
+            time.sleep(0.5)
+
+            # Step 3: Search
+            with progress_placeholder.container():
+                display_search_progress(2, 6, "Performing semantic search")
+
+            search_results = st.session_state.hadith_retriever.search_multiple_sources(
+                question, selected_collections, max_docs
+            )
+
+            # Step 4: Generate answers
+            with progress_placeholder.container():
+                display_search_progress(3, 6, "Generating scholarly analysis")
+
+            results = {}
+            collection_answers = {}
+
+            for collection_name, documents in search_results.items():
+                if documents and st.session_state.get('search_in_progress', True):
+                    answer = st.session_state.qa_chain.generate_answer(
+                        question, documents, collection_name
                     )
+                    results[collection_name] = (answer, documents)
+                    collection_answers[collection_name] = answer
 
-                # Statistics and sources
-                if result["sources"]:
+            # Step 5: Comparative analysis
+            comparative_analysis = None
+            if include_comparison and len(collection_answers) > 1 and st.session_state.get('search_in_progress', True):
+                with progress_placeholder.container():
+                    display_search_progress(4, 6, "Creating comparative analysis")
+
+                comparative_analysis = st.session_state.qa_chain.generate_comparative_analysis(
+                    question, collection_answers
+                )
+
+            # Step 6: Finalize
+            with progress_placeholder.container():
+                display_search_progress(5, 6, "Finalizing results")
+            time.sleep(0.5)
+
+            progress_placeholder.empty()
+            st.session_state.search_in_progress = False
+
+            if results:
+                # Display comparative analysis first
+                if comparative_analysis:
+                    st.markdown("## 📊 Comparative Scholarly Analysis")
+                    st.markdown('<div class="result-card">', unsafe_allow_html=True)
+                    st.markdown(comparative_analysis)
+                    st.markdown('</div>', unsafe_allow_html=True)
                     st.markdown("---")
-                    st.header("📊 Statistics of Found Sources")
-                    display_search_statistics(result["sources"])
 
+                # Display individual collection results
+                st.markdown("## 📚 Individual Collection Results")
+
+                collection_info = get_collection_display_info()
+
+                for collection_name, (answer, sources) in results.items():
+                    info = collection_info.get(collection_name, {'title': collection_name})
+
+                    st.markdown(f"### 📖 {info['title']}")
+                    st.markdown('<div class="result-card">', unsafe_allow_html=True)
+                    st.markdown(
+                        f"**Found {len(sources)} sources** • **Model:** {Config.AVAILABLE_MODELS[selected_model]}")
                     st.markdown("---")
-                    st.header("📖 Detailed Sources")
-                    st.markdown(f"*Found {len(result['sources'])} relevant hadith fragments*")
+                    st.markdown(answer)
+                    st.markdown('</div>', unsafe_allow_html=True)
 
-                    for i, doc in enumerate(result["sources"]):
-                        with st.expander(
-                                f"Source {i + 1}: {doc.metadata.get('collection_book', 'Unknown')} - "
-                                f"Hadith #{doc.metadata.get('hadith_id_in_book', 'N/A')}",
-                                expanded=i == 0  # First source open by default
-                        ):
-                            st.markdown(format_source_document(doc, i))
-                else:
-                    st.warning("⚠️ No relevant sources found")
+                    # Sources section - Display each source individually
+                    if sources:
+                        st.markdown(f"#### 📋 Sources from {info['title']}")
+                        for i, doc in enumerate(sources):
+                            with st.container():
+                                format_source_document(doc, i, collection_name)
 
-            except Exception as e:
-                st.error(f"❌ An error occurred: {e}")
-                logger.error(f"Error in main process: {e}")
+            else:
+                st.warning("⚠️ No relevant sources found in the selected collections.")
+
+        except Exception as e:
+            st.error(f"❌ An error occurred during search: {e}")
+            logger.error(f"Search error: {e}")
+            st.session_state.search_in_progress = False
+
+    elif search_button and not selected_collections:
+        st.warning("⚠️ Please select at least one collection to search.")
 
     elif search_button and not question.strip():
-        st.warning("⚠️ Please enter a question")
+        st.warning("⚠️ Please enter a search question.")
 
-    # Футер
+    # Footer
     st.markdown("---")
-    st.markdown(
-        """
-        <div style='text-align: center; color: #666; padding: 20px;'>
-        <h4>📚 Hadith QA Retriever</h4>
-        <p><strong>Powered by:</strong> OpenAI Embeddings • OpenRouter LLM • FAISS Vector Search</p>
-        <p><em>Complete hadith metadata database with semantic search</em></p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown('''
+    <div style="text-align: center; padding: 2rem; color: var(--text-tertiary);">
+        <h4 style="color: var(--text-secondary);">🌟 AskSunna - Islamic Knowledge Search Engine</h4>
+        <p><strong>Powered by:</strong> OpenAI Embeddings • DeepSeek Models • FAISS Vector Search • Advanced NLP</p>
+        <p><em>Comprehensive hadith database with semantic search and scholarly comparative analysis</em></p>
+    </div>
+    ''', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
